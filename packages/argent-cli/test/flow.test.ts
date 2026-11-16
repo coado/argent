@@ -145,6 +145,20 @@ function report(overrides: Record<string, unknown> = {}): Record<string, unknown
   };
 }
 
+const SKIPPED_DIRS = ["__baselines__", ".cache", "node_modules"];
+
+/** Writes top.yaml and suite/nested.yaml, plus a sneaky.yaml in each skipped folder at both levels. */
+async function writeSkippedDirsTree(root: string): Promise<void> {
+  for (const dir of SKIPPED_DIRS) {
+    for (const parent of [root, path.join(root, "suite")]) {
+      await fsp.mkdir(path.join(parent, dir), { recursive: true });
+      await fsp.writeFile(path.join(parent, dir, "sneaky.yaml"), "steps: []\n");
+    }
+  }
+  await fsp.writeFile(path.join(root, "top.yaml"), "steps: []\n");
+  await fsp.writeFile(path.join(root, "suite", "nested.yaml"), "steps: []\n");
+}
+
 describe("parseRunArgs", () => {
   it("returns documented defaults with just a flow path", () => {
     expect(parseRunArgs(["../flows/checkout.yaml"])).toEqual({
@@ -1261,10 +1275,13 @@ describe("argent e2e run", () => {
     const listRoot = path.join(tempRoot, "list-nested-project");
     const flowsDir = path.join(listRoot, ".argent", "e2e");
     await fsp.mkdir(path.join(flowsDir, "suite", "deep"), { recursive: true });
+    await fsp.mkdir(path.join(flowsDir, "x"));
     await Promise.all([
       fsp.writeFile(path.join(flowsDir, "top.yaml"), "steps: []\n"),
       fsp.writeFile(path.join(flowsDir, "suite", "checkout.yaml"), "steps: []\n"),
       fsp.writeFile(path.join(flowsDir, "suite", "deep", "login.yaml"), "steps: []\n"),
+      fsp.writeFile(path.join(flowsDir, "x-y.yaml"), "steps: []\n"),
+      fsp.writeFile(path.join(flowsDir, "x", "z.yaml"), "steps: []\n"),
     ]);
     const previousCwd = process.cwd();
     try {
@@ -1277,6 +1294,8 @@ describe("argent e2e run", () => {
           ".argent/e2e/suite/checkout.yaml",
           ".argent/e2e/suite/deep/login.yaml",
           ".argent/e2e/top.yaml",
+          ".argent/e2e/x-y.yaml",
+          ".argent/e2e/x/z.yaml",
         ].join("\n")
       );
 
@@ -1318,6 +1337,40 @@ describe("argent e2e run", () => {
     expect(logs.join("\n")).toBe(
       [".argent/e2e/checkout.yaml", ".argent/e2e/suite/login.yaml"].join("\n")
     );
+  });
+
+  it("never lists the inside of __baselines__, a dot-directory or node_modules, at any depth", async () => {
+    const listRoot = path.join(tempRoot, "list-skipped-project");
+    await writeSkippedDirsTree(path.join(listRoot, ".argent", "e2e"));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(listRoot);
+      await flow(["list"], opts);
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(logs.join("\n")).toBe(
+      [".argent/e2e/suite/nested.yaml", ".argent/e2e/top.yaml"].join("\n")
+    );
+  });
+
+  it("lists the same tests that `run <dir> --recursive` runs", async () => {
+    const root = path.join(tempRoot, "list-run-agreement");
+    await writeSkippedDirsTree(root);
+    await writeSkippedDirsTree(path.join(root, ".argent", "e2e"));
+    await fsp.mkdir(path.join(root, "suite", "deep"), { recursive: true });
+    await fsp.writeFile(path.join(root, "suite", "deep", "deeper.yaml"), "steps: []\n");
+
+    await flow(["list", root], opts);
+    const listed = logs.join("\n").split("\n");
+    await expect(flow(["run", root, "--recursive"], opts)).rejects.toThrow("process.exit:0");
+
+    const ran = toolsClientMock.callTool.mock.calls.map(
+      (c) => (c[1] as { e2e_test_path: string }).e2e_test_path
+    );
+    expect(ran).toHaveLength(5);
+    expect(listed).toEqual(ran);
   });
 
   it("omits .yaml files whose names `flow run` would reject — and `run` does reject them", async () => {
@@ -1678,6 +1731,55 @@ describe("argent e2e run", () => {
       expect(logs.join("\n")).toBe(
         [path.join(absolute, "login.yaml"), path.join(absolute, "suite", "pay.yaml")].join("\n")
       );
+    });
+
+    it("skips __baselines__, dot-directories and node_modules below the directory, at any depth", async () => {
+      await writeSkippedDirsTree(path.join(listRoot, "skips"));
+
+      await flow(["list", "skips"], opts);
+
+      expect(logs.join("\n")).toBe(["skips/suite/nested.yaml", "skips/top.yaml"].join("\n"));
+    });
+
+    it("enters .argent but no other dot-directory, so `list .` reaches .argent/e2e and .argent/flows", async () => {
+      const root = path.join(tempRoot, "list-dot-project");
+      const e2eDir = path.join(root, ".argent", "e2e");
+      await fsp.mkdir(path.join(e2eDir, ".cache"), { recursive: true });
+      await fsp.mkdir(path.join(e2eDir, "__baselines__"), { recursive: true });
+      await fsp.mkdir(path.join(root, ".argent", "flows"), { recursive: true });
+      await fsp.mkdir(path.join(root, ".github", "workflows"), { recursive: true });
+      await Promise.all([
+        fsp.writeFile(path.join(e2eDir, "saved.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(e2eDir, ".cache", "t.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(e2eDir, "__baselines__", "b.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(root, ".argent", "flows", "login.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(root, ".github", "workflows", "ci.yaml"), "steps: []\n"),
+      ]);
+      process.chdir(root);
+
+      await flow(["list", "."], opts);
+
+      expect(logs.join("\n")).toBe(
+        [".argent/e2e/saved.yaml", ".argent/flows/login.yaml"].join("\n")
+      );
+    });
+
+    it("lists the tests in a nested .argent/e2e", async () => {
+      const nested = path.join(listRoot, "packages", "app", ".argent", "e2e");
+      await fsp.mkdir(nested, { recursive: true });
+      await fsp.writeFile(path.join(nested, "smoke.yaml"), "steps: []\n");
+
+      await flow(["list", "packages"], opts);
+
+      expect(logs).toEqual(["packages/app/.argent/e2e/smoke.yaml"]);
+    });
+
+    it.each(SKIPPED_DIRS)("lists a directory named %s when it is the one passed", async (dir) => {
+      await writeSkippedDirsTree(path.join(listRoot, "skips"));
+
+      await flow(["list", path.join("skips", dir)], opts);
+
+      expect(logs).toEqual([path.join("skips", dir, "sneaky.yaml")]);
     });
 
     it.each([[["./-dash"]], [["--", "-dash"]]])(
@@ -2572,6 +2674,8 @@ describe("argent e2e run <dir>", () => {
     await fsp.mkdir(path.join(flowsDir, "sub"), { recursive: true });
     await fsp.mkdir(path.join(flowsDir, ".hidden"), { recursive: true });
     await fsp.mkdir(path.join(flowsDir, "node_modules"), { recursive: true });
+    await fsp.mkdir(path.join(flowsDir, "__baselines__"), { recursive: true });
+    await fsp.mkdir(path.join(flowsDir, "sub", "__baselines__"), { recursive: true });
     await fsp.mkdir(path.join(flowsDir, "bundle.yaml"), { recursive: true });
     await Promise.all([
       fsp.writeFile(path.join(flowsDir, "a-login.yaml"), "steps: []\n"),
@@ -2581,6 +2685,8 @@ describe("argent e2e run <dir>", () => {
       fsp.writeFile(path.join(flowsDir, "sub", "c-search.yaml"), "steps: []\n"),
       fsp.writeFile(path.join(flowsDir, ".hidden", "hidden.yaml"), "steps: []\n"),
       fsp.writeFile(path.join(flowsDir, "node_modules", "dep.yaml"), "steps: []\n"),
+      fsp.writeFile(path.join(flowsDir, "__baselines__", "base.yaml"), "steps: []\n"),
+      fsp.writeFile(path.join(flowsDir, "sub", "__baselines__", "base.yaml"), "steps: []\n"),
     ]);
   });
 
@@ -3377,7 +3483,7 @@ describe("argent e2e run <dir>", () => {
     ]);
   });
 
-  it("finds nested flows with --recursive, skipping dot-directories and node_modules", async () => {
+  it("finds nested flows with --recursive, skipping __baselines__, dot-directories and node_modules", async () => {
     await expect(flow(["run", flowsDir, "--recursive"], opts)).rejects.toThrow("process.exit:0");
 
     const flowPaths = toolsClientMock.callTool.mock.calls.map(
@@ -3390,6 +3496,55 @@ describe("argent e2e run <dir>", () => {
     ]);
     expect(logs.join("\n")).toContain(`[3/3] ${path.join("sub", "c-search.yaml")}`);
   });
+
+  it("runs the tests in a nested .argent/e2e with --recursive, skipping other dot-directories", async () => {
+    const root = path.join(tempRoot, "argent-mono");
+    const nested = path.join(root, "app", ".argent", "e2e");
+    await fsp.mkdir(nested, { recursive: true });
+    await fsp.mkdir(path.join(root, ".github", "workflows"), { recursive: true });
+    await fsp.writeFile(path.join(nested, "smoke.yaml"), "steps: []\n");
+    await fsp.writeFile(path.join(root, ".github", "workflows", "ci.yaml"), "steps: []\n");
+
+    await expect(flow(["run", root, "-r"], opts)).rejects.toThrow("process.exit:0");
+
+    const flowPaths = toolsClientMock.callTool.mock.calls.map(
+      (c) => (c[1] as { e2e_test_path: string }).e2e_test_path
+    );
+    expect(flowPaths).toEqual([path.join(nested, "smoke.yaml")]);
+  });
+
+  it("enters a folder named exactly .argent, and only with --recursive", async () => {
+    const root = path.join(tempRoot, "argent-exact");
+    await fsp.mkdir(path.join(root, ".argent"), { recursive: true });
+    await fsp.mkdir(path.join(root, ".argent-old"), { recursive: true });
+    await Promise.all([
+      fsp.writeFile(path.join(root, "top.yaml"), "steps: []\n"),
+      fsp.writeFile(path.join(root, ".argent", "x.yaml"), "steps: []\n"),
+      fsp.writeFile(path.join(root, ".argent-old", "y.yaml"), "steps: []\n"),
+    ]);
+    const ranPaths = () =>
+      toolsClientMock.callTool.mock.calls.map(
+        (c) => (c[1] as { e2e_test_path: string }).e2e_test_path
+      );
+
+    await expect(flow(["run", root], opts)).rejects.toThrow("process.exit:0");
+    expect(ranPaths()).toEqual([path.join(root, "top.yaml")]);
+
+    toolsClientMock.callTool.mockClear();
+    await expect(flow(["run", root, "-r"], opts)).rejects.toThrow("process.exit:0");
+    expect(ranPaths()).toEqual([path.join(root, ".argent", "x.yaml"), path.join(root, "top.yaml")]);
+  });
+
+  it.each(["__baselines__", ".hidden", "node_modules"])(
+    "runs the tests in a directory named %s when it is the one passed",
+    async (dir) => {
+      await expect(flow(["run", path.join(flowsDir, dir), "-r"], opts)).rejects.toThrow(
+        "process.exit:0"
+      );
+
+      expect(toolsClientMock.callTool).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it("treats a directory named like a flow file as a directory", async () => {
     const dirYaml = path.join(tempRoot, "suite.yaml");
