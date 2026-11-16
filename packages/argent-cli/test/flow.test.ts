@@ -1607,7 +1607,8 @@ describe("argent e2e run", () => {
 
   it.each([
     [["--frobnicate"], "Unknown flag: --frobnicate"],
-    [["extra"], 'unexpected argument "extra"; e2e list takes no arguments'],
+    [["one", "two"], 'unexpected argument "two"; e2e list takes at most one directory path'],
+    [[""], "e2e list requires a non-empty directory path"],
   ])("rejects `list %s` as a usage error with exit 2", async (args, message) => {
     await expect(flow(["list", ...args], opts)).rejects.toThrow("process.exit:2");
     expect(logs).toEqual([]);
@@ -1629,7 +1630,122 @@ describe("argent e2e run", () => {
     await flow(["list", ...args], opts);
 
     expect(logs.join("\n")).toContain("Usage: argent e2e");
-    expect(logs.join("\n")).toContain("list [--json]");
+    expect(logs.join("\n")).toContain("list [dir] [--json]");
+  });
+
+  describe("list <dir>", () => {
+    let listRoot: string;
+    let previousCwd: string;
+    beforeEach(async () => {
+      listRoot = path.join(tempRoot, "list-dir-project");
+      const testsDir = path.join(listRoot, "tests", "e2e");
+      await fsp.mkdir(path.join(testsDir, "suite"), { recursive: true });
+      await fsp.mkdir(path.join(testsDir, "__baselines__"), { recursive: true });
+      await fsp.mkdir(path.join(listRoot, ".argent", "e2e"), { recursive: true });
+      await fsp.mkdir(path.join(listRoot, ".argent", "flows"), { recursive: true });
+      await fsp.mkdir(path.join(listRoot, "empty"), { recursive: true });
+      await Promise.all([
+        fsp.writeFile(path.join(testsDir, "login.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(testsDir, "suite", "pay.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(testsDir, "notes.yml"), "steps: []\n"),
+        fsp.writeFile(path.join(testsDir, "__baselines__", "old.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(listRoot, ".argent", "e2e", "saved.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(listRoot, ".argent", "flows", "login.yaml"), "steps: []\n"),
+        fsp.writeFile(path.join(listRoot, "file.yaml"), "steps: []\n"),
+      ]);
+      previousCwd = process.cwd();
+      process.chdir(listRoot);
+    });
+    afterEach(() => {
+      process.chdir(previousCwd);
+    });
+
+    it("lists only the tests in the directory, relative to the current directory or absolute", async () => {
+      await flow(["list", "tests/e2e"], opts);
+
+      expect(logs.join("\n")).toBe(["tests/e2e/login.yaml", "tests/e2e/suite/pay.yaml"].join("\n"));
+      expect(errs).toEqual([]);
+
+      logs.length = 0;
+      await flow(["list", "./tests/e2e"], opts);
+
+      expect(logs.join("\n")).toBe(["tests/e2e/login.yaml", "tests/e2e/suite/pay.yaml"].join("\n"));
+
+      logs.length = 0;
+      const absolute = path.join(listRoot, "tests", "e2e");
+      await flow(["list", "--", absolute], opts);
+
+      expect(logs.join("\n")).toBe(
+        [path.join(absolute, "login.yaml"), path.join(absolute, "suite", "pay.yaml")].join("\n")
+      );
+    });
+
+    it.each([[["./-dash"]], [["--", "-dash"]]])(
+      "prints a path that starts with a dash as ./ for `list %s`",
+      async (args) => {
+        await fsp.mkdir(path.join(listRoot, "-dash"), { recursive: true });
+        await fsp.writeFile(path.join(listRoot, "-dash", "d.yaml"), "steps: []\n");
+
+        await flow(["list", ...args], opts);
+
+        expect(logs).toEqual(["./-dash/d.yaml"]);
+      }
+    );
+
+    it.skipIf(!canDenyRead)("rejects an unreadable directory with exit 2", async () => {
+      const locked = path.join(listRoot, "locked");
+      await fsp.mkdir(locked, { recursive: true });
+      await fsp.chmod(locked, 0o000);
+      try {
+        await expect(flow(["list", "locked"], opts)).rejects.toThrow("process.exit:2");
+      } finally {
+        await fsp.chmod(locked, 0o755);
+      }
+      expect(logs).toEqual([]);
+      expect(errs).toEqual(["Could not read e2e test directory: locked"]);
+    });
+
+    it.each([[["--json", "tests/e2e"]], [["tests/e2e", "--json"]]])(
+      "prints only the path of each entry for `list %s`",
+      async (args) => {
+        await flow(["list", ...args], opts);
+
+        expect(errs).toEqual([]);
+        expect(JSON.parse(logs.join("\n"))).toEqual({
+          e2eTests: [{ path: "tests/e2e/login.yaml" }, { path: "tests/e2e/suite/pay.yaml" }],
+        });
+      }
+    );
+
+    it("reports an empty directory on stderr, keeps stdout empty and exits 0", async () => {
+      await flow(["list", "empty"], opts);
+      expect(logs).toEqual([]);
+      expect(errs).toEqual(["No e2e tests found in empty"]);
+
+      errs.length = 0;
+      await flow(["list", "empty", "--json"], opts);
+      expect(JSON.parse(logs.join("\n"))).toEqual({ e2eTests: [] });
+      expect(errs).toEqual([]);
+    });
+
+    it.each([
+      ["missing", "E2E test directory not found: missing"],
+      ["file.yaml", "E2E test path is not a directory: file.yaml"],
+      [
+        "tests/../tests/e2e",
+        'E2E test directory must not contain ".." segments - they are collapsed without following symlinks, so the path can name a different directory than the one your shell opens: tests/../tests/e2e\nPass the fully resolved path to the directory.',
+      ],
+    ])("rejects `list %s` with exit 2", async (dir, message) => {
+      await expect(flow(["list", dir], opts)).rejects.toThrow("process.exit:2");
+      expect(logs).toEqual([]);
+      expect(errs).toEqual([message]);
+
+      errs.length = 0;
+      await expect(flow(["list", "--json", dir], opts)).rejects.toThrow("process.exit:2");
+      expect(logs).toEqual([]);
+      expect(errs).toHaveLength(1);
+      expect(JSON.parse(errs[0]!)).toEqual({ event: "error", error: message });
+    });
   });
 
   it("renders the report — echo lines unnumbered, real steps numbered, reasons and fragment tags shown — and exits 1 on failure", async () => {
