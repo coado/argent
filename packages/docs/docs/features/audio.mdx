@@ -37,6 +37,8 @@ An app that loaded an older hook without the recording part cannot record. The a
 
 To load the hook only into simulators where the agent used an audio tool, run `argent disable ios-audio-always-inserted`. Then the first audio request loads the hook, and only apps that start after that request have it. See [feature flags](/docs/reference/configuration).
 
+A simulator that already has the hook keeps it until the simulator shuts down. After you disable the flag, shut down the simulator and boot it again.
+
 ## Where the audio lands
 
 Argent saves each recording in the `.argent/recordings/` directory of the project. Argent uses the 16-bit WAV format with the sample rate of the simulator, usually 48 kHz.
@@ -55,7 +57,7 @@ Argent saves each recording in the `.argent/recordings/` directory of the projec
 - The tool server feeds the microphone input and writes the recording. When the tool server stops, or when `stop-all-simulator-servers` releases the simulator, Argent gives the real microphone back and drops a recording that runs. Argent keeps an input that a different tool server set after this one. If the tool server stops without a clean exit, the app hears silence until a new tool server connects to the simulator. The new tool server then gives the microphone back and stops the muted recordings that the old tool server left. It does not change the input or the recordings of a different tool server that runs.
 - Argent records one app at a time. When an app plays through several audio streams, the recording contains the mix that the app sends to the speaker.
 - An app that a tool starts with its own injected libraries does not get the hook. Xcode runs with the Main Thread Checker, Detox, and XCUITest do this. Start the app with Argent instead.
-- The audio hook uses private parts of the simulator audio stack that Apple can change. Argent tests it on iOS 26.5, 27.0, and 27.1.
+- The audio hook uses private parts of the simulator audio stack that Apple can change. Argent tests it on iOS 17.4, 18.5, 26.5, and 27.2.
 - Your Mac keeps the real microphone open during a test, so the microphone indicator can show.
 
 Argent does this with the `audio-input`, `audio-record-start`, and `audio-record-stop` tools. The [tools reference](/docs/reference/tools) contains all tools.
