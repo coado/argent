@@ -33,6 +33,8 @@ const FEED_TICK_MS = 10;
 const DRAIN_TICK_MS = 20;
 /** The WAV header is rewritten this often while recording, so a crash leaves a file with a real length. */
 const WAV_PATCH_EVERY_TICKS = 25;
+/** KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, as a WAVE_FORMAT_EXTENSIBLE `fmt ` chunk stores it. */
+const FLOAT_SUBFORMAT = "0300000000001000800000aa00389b71";
 
 function putU32(fd: number, pos: number, value: number): void {
   const b = Buffer.alloc(4);
@@ -78,7 +80,13 @@ export function readClipInfo(fd: number): ClipInfo {
       const channels = head.readUInt16LE(pos + 10);
       const rate = head.readUInt32LE(pos + 12);
       const bits = head.readUInt16LE(pos + 22);
-      fmtOk = tag === 3 && channels === 1 && bits === 32 && rate === STREAM_RATE;
+      // afconvert writes the extensible header (0xfffe) when the source carries a channel layout.
+      const float =
+        tag === 3 ||
+        (tag === 0xfffe &&
+          len >= 40 &&
+          head.toString("hex", pos + 32, pos + 48) === FLOAT_SUBFORMAT);
+      fmtOk = float && channels === 1 && bits === 32 && rate === STREAM_RATE;
     } else if (id === "data") {
       if (!fmtOk) throw bad("unexpected format");
       const dataOffset = pos + 8;

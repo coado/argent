@@ -149,6 +149,7 @@ The audio tools need an iOS simulator on the same Mac as the tool-server. These 
 - A recording covers one app. A second `audio-record-start` for the same app fails until `audio-record-stop`.
 - `audio-record-start` fails with `AUDIO_HOOK_NOT_ACTIVE` when the hook in the app is a build without recording. Restart the app so that it loads the installed hook.
 - A remote (`remote:`) simulator, a tvOS simulator, a physical device, Android and Chromium fail before Argent starts a service.
+- The simulator must be booted. For a shut-down or unknown simulator, the audio tools fail with `AUDIO_SIMULATOR_NOT_BOOTED`. Boot it with `boot-device` first.
 - Without `libArgentAudio.dylib` in the install, the audio tools fail with `AUDIO_HOOK_UNAVAILABLE`. The other tools work.
 
 ## JavaScript runtime debugging
