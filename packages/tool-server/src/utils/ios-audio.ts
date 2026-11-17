@@ -479,10 +479,7 @@ export function assertHookProto(status: AppAudioStatus | null, bundleId: string)
 
 function noHookError(bundleId: string): FailureError {
   return new FailureError(
-    `The audio hook is not live in ${bundleId}. Apps that were running before the first audio tool call ` +
-      `(or after a simulator reboot) were launched without it: call restart-app for ${bundleId} and retry. ` +
-      `If it still is not live after a restart, the app was launched by a tool that injects its own libraries ` +
-      `(Xcode run, Detox, XCUITest), which replaces Argent's; launch it with launch-app instead.`,
+    `The audio hook is not live in ${bundleId}: call restart-app for it, then retry.`,
     {
       error_code: FAILURE_CODES.AUDIO_HOOK_NOT_ACTIVE,
       failure_stage: "audio_hook_status",
@@ -499,9 +496,7 @@ function noHookError(bundleId: string): FailureError {
 function assertHookRecords(status: AppAudioStatus | null, bundleId: string): void {
   if (!status || status.features.includes("rec")) return;
   throw new FailureError(
-    `The audio hook in ${bundleId} cannot record the app's output: it is a build with microphone input only. ` +
-      `Call restart-app for ${bundleId} so it loads the installed hook, then retry. If it still cannot record, ` +
-      `this Argent install ships an audio hook without recording.`,
+    `The audio hook in ${bundleId} is a build with microphone input only: call restart-app for it, then retry.`,
     {
       error_code: FAILURE_CODES.AUDIO_HOOK_NOT_ACTIVE,
       failure_stage: "audio_hook_status",
@@ -528,15 +523,12 @@ export async function startRecording(
   const dormant = hook.state === "dormant";
   const { recorders, pendingIds } = session;
   if (status?.recording || recorders.has(bundleId)) {
-    throw new FailureError(
-      `${bundleId} is already being recorded${recorders.has(bundleId) ? ` to ${recorders.get(bundleId)!.wavPath}` : ""}. Call audio-record-stop first.`,
-      {
-        error_code: FAILURE_CODES.AUDIO_RECORDING_ALREADY_ACTIVE,
-        failure_stage: "audio_record_start",
-        failure_area: "tool_server",
-        error_kind: "validation",
-      }
-    );
+    throw new FailureError(`${bundleId} is already being recorded: call audio-record-stop first.`, {
+      error_code: FAILURE_CODES.AUDIO_RECORDING_ALREADY_ACTIVE,
+      failure_stage: "audio_record_start",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    });
   }
   const id = randomUUID().slice(0, 8);
   const { dir } = session;
@@ -567,7 +559,7 @@ export async function startRecording(
   throw new FailureError(
     ack?.error
       ? `${bundleId} could not start recording: ${ack.error}`
-      : `${bundleId} did not confirm the recording within ${ACK_TIMEOUT_MS / 1000}s. The app may be suspended or its process hung.`,
+      : `${bundleId} did not confirm the recording within ${ACK_TIMEOUT_MS / 1000}s; it may be suspended.`,
     {
       error_code: FAILURE_CODES.AUDIO_RECORDING_START_FAILED,
       failure_stage: "audio_record_start",
@@ -624,15 +616,15 @@ export async function stopRecording(
     recorders.delete(bundleId);
     return finishedRecording(
       recorder.finish(),
-      `${bundleId} quit or was relaunched while it was recorded. The file holds what it played until then.`
+      `${bundleId} quit or was relaunched while recorded; the file holds what it played until then.`
     );
   }
   if (!recorder || !status) {
     removeFiles(session.dir, `out-${bundleId}-`);
     throw new FailureError(
       status?.recording
-        ? `${bundleId} was recorded by a tool-server that has since stopped, so its audio is lost. The recording has now been stopped; start a new one.`
-        : `${bundleId} is not being recorded. Call audio-record-start first${status ? "" : " (the app is not running or its audio hook is not live)"}.`,
+        ? `${bundleId} was recorded by a tool-server that has since stopped, so its audio is lost: start a new recording.`
+        : `${bundleId} is not being recorded: call audio-record-start first.`,
       {
         error_code: FAILURE_CODES.AUDIO_NO_ACTIVE_RECORDING,
         failure_stage: "audio_record_stop",
@@ -650,7 +642,7 @@ export async function stopRecording(
     recorder.finish(),
     done
       ? undefined
-      : `${bundleId} did not confirm the end of the recording within ${ACK_TIMEOUT_MS / 1000}s. The file may miss its last moments.`
+      : `${bundleId} did not confirm the end of the recording; the file may miss its last moments.`
   );
 }
 

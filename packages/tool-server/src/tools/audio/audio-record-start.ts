@@ -7,15 +7,11 @@ import { audioCapability, resolveAudioDevice, resolveAudioSession } from "./audi
 
 const zodSchema = z.object({
   udid: z.string().describe("Target iOS Simulator UDID from `list-devices`."),
-  bundleId: z
-    .string()
-    .describe("App whose audio output to record, e.g. com.example.MyApp. It must be running."),
+  bundleId: z.string().describe("App to record; it must be running."),
   muteOutput: z
     .boolean()
     .optional()
-    .describe(
-      "Default false. Silence the app on the host speakers while it is recorded; the recording itself stays audible."
-    ),
+    .describe("Silence the app on the host speakers while recording. Default false."),
 });
 
 type Params = z.infer<typeof zodSchema>;
@@ -31,12 +27,8 @@ export function createAudioRecordStartTool(
 ): ToolDefinition<Params, AudioRecordStartResult> {
   return {
     id: "audio-record-start",
-    description: `Start recording the sound an app in an iOS Simulator plays (everything it sends to the speaker, mixed) into a WAV file.
-Use when checking what an app plays: a notification sound, text to speech, a call, a game, a player.
-The recording runs until \`audio-record-stop\`, which returns the file. Start it before the action that makes the app play. One recording per app at a time.
-Records the one app only, not the whole simulator and not web content. Needs the audio hook in the app: restart-app an app launched before Argent armed the simulator.
-Returns { status: "recording", bundleId, muteOutput } once the app confirms that it records.
-Fails if the audio hook is not live in the app or is a build without recording, the app is already being recorded, or the target is not a local iOS Simulator.`,
+    description: `Start recording what an app in an iOS Simulator plays into a WAV file; \`audio-record-stop\` returns it.
+Call it before the action that makes the app play.`,
     zodSchema,
     searchHint: "audio record output speaker sound capture app playback wav start",
     interaction: {
